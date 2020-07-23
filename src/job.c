@@ -2283,6 +2283,11 @@ child_execute_job (struct childbase *child, int good_stdin, char **argv)
   posix_spawnattr_t attr;
   posix_spawn_file_actions_t fa;
   short flags = 0;
+
+  int in_pipes[2];
+  int arg_count    = 0;
+  int pipe_command = 0;
+  char *pipe_buffer  = NULL;
 #endif
 
   /* Divert child output if we want to capture it.  */
@@ -2349,11 +2354,35 @@ child_execute_job (struct childbase *child, int good_stdin, char **argv)
   flags |= POSIX_SPAWN_USEVFORK;
 #endif
 
+  // Trocaremos toda invocação da shell outrora remetida via
+  // um grande argumento (-c) por "pipear" para a mesma (-s)
+  for(arg_count = 0; argv[arg_count]; arg_count++);
+  if(arg_count == 3) {
+    if(strcmp(argv[0], "/bin/sh") == 0
+        || strcmp(argv[0], "/bin/bash") == 0
+        || strcmp(argv[0], "/bin/dash") == 0) {
+          pipe_command = 1;
+
+          pipe_buffer = malloc(strlen(argv[2]) + 1);
+          strcpy(pipe_buffer, argv[2]);
+          strcpy(argv[1], "-s");
+          argv[2] = '\0';
+
+          pipe(in_pipes);
+    }
+  }
+
   /* For any redirected FD, dup2() it to the standard FD.
      They are all marked close-on-exec already.  */
-  if (fdin >= 0 && fdin != FD_STDIN)
+  if(pipe_command == 1) {
+    if ((r = posix_spawn_file_actions_adddup2 (&fa, in_pipes[0], FD_STDIN)) != 0)
+      goto cleanup;
+    if ((r = posix_spawn_file_actions_addclose (&fa, in_pipes[1])) != 0)
+      goto cleanup;
+  } else if (fdin >= 0 && fdin != FD_STDIN) {
     if ((r = posix_spawn_file_actions_adddup2 (&fa, fdin, FD_STDIN)) != 0)
       goto cleanup;
+  }
   if (fdout != FD_STDOUT)
     if ((r = posix_spawn_file_actions_adddup2 (&fa, fdout, FD_STDOUT)) != 0)
       goto cleanup;
@@ -2410,11 +2439,18 @@ child_execute_job (struct childbase *child, int good_stdin, char **argv)
   /* posix_spawn() doesn't provide sh fallback like exec() does; implement
      it here.  POSIX doesn't specify the path to sh so use the default.  */
 
+  if(pipe_command == 1)
+    close(in_pipes[0]);
+
   if (r == ENOEXEC)
     {
       char **nargv;
       char **pp;
       size_t l = 0;
+
+      pipe_command = 0;
+      close(in_pipes[1]);
+      strcpy(argv[2], pipe_buffer);
 
       for (pp = argv; *pp != NULL; ++pp)
         ++l;
@@ -2437,13 +2473,22 @@ child_execute_job (struct childbase *child, int good_stdin, char **argv)
       free (child->cmd_name);
       if (cmd != argv[0])
         child->cmd_name = cmd;
-      else
+      else {
         child->cmd_name = xstrdup(cmd);
+      }
+      if(pipe_command) {
+        write(in_pipes[1], pipe_buffer, strlen(pipe_buffer));
+      }
     }
 
  cleanup:
   posix_spawn_file_actions_destroy (&fa);
   posix_spawnattr_destroy (&attr);
+
+  if(pipe_command) {
+    close(in_pipes[1]);
+    free(pipe_buffer);
+  }
 
  done:
   if (r != 0)
