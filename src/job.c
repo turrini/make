@@ -2358,17 +2358,18 @@ child_execute_job (struct childbase *child, int good_stdin, char **argv)
   // um grande argumento (-c) por "pipear" para a mesma (-s)
   for(arg_count = 0; argv[arg_count]; arg_count++);
   if(arg_count == 3) {
-    if(strcmp(argv[0], "/bin/sh") == 0
+    if((strcmp(argv[0], "/bin/sh") == 0
         || strcmp(argv[0], "/bin/bash") == 0
-        || strcmp(argv[0], "/bin/dash") == 0) {
+        || strcmp(argv[0], "/bin/dash") == 0
+        ) && strncmp(argv[1], "-c", 2) == 0) {
+        if(pipe(in_pipes) == 0) {
           pipe_command = 1;
 
-          pipe_buffer = malloc(strlen(argv[2]) + 1);
+          pipe_buffer = xmalloc(strlen(argv[2]) + 1);
           strcpy(pipe_buffer, argv[2]);
           strcpy(argv[1], "-s");
           argv[2] = '\0';
-
-          pipe(in_pipes);
+        }
     }
   }
 
